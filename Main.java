@@ -1,46 +1,65 @@
-import java.util.*;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.logging.Logger;
+import java.util.*;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class Main {
+
     public static void main(String[] args) {
         CensusChecker checker = new CensusChecker();
         Scanner scanner = new Scanner(System.in);
 
-        System.out.println("Enter the state name (e.g., North Carolina): ");
-        String stateName = scanner.nextLine();
+        System.out.print("Enter the state name (e.g., North Carolina): ");
+        String stateName = scanner.nextLine().trim();
         String stateFIPS = checker.getStateFipsFromName(stateName);
 
         if (stateFIPS == null) {
-            System.out.println("Invalid state name. Please try again.");
+            System.out.println("Invalid state name. Exiting.");
             return;
         }
 
-        System.out.println("Would you like the total population (T) or a specific age range (R)? Enter T or R:");
-        String choice = scanner.nextLine().trim().toUpperCase();
+        System.out.println("Choose data to fetch:");
+        System.out.println("[T] Total Population");
+        System.out.println("[R] Population by Age Range");
+        System.out.println("[O] Population by Occupation");
+        String option = scanner.nextLine().trim().toUpperCase();
 
-        int total;
-        if (choice.equals("T")) {
-            total = checker.CensusCheckerAge(0, 100, stateFIPS);
-        } else if (choice.equals("R")) {
-            System.out.println("Enter minimum age: ");
-            int minAge = scanner.nextInt();
-            System.out.println("Enter maximum age: ");
-            int maxAge = scanner.nextInt();
-            scanner.nextLine();
-            total = checker.CensusCheckerAge(minAge, maxAge, stateFIPS);
-        } else {
-            System.out.println("Invalid option. Exiting.");
-            return;
+        switch (option) {
+            case "T":
+                int total = checker.CensusCheckerAge(0, 100, stateFIPS);
+                System.out.println("TOTAL STATE POPULATION: " + total);
+                break;
+
+            case "R":
+                System.out.print("Enter minimum age: ");
+                int minAge = scanner.nextInt();
+                System.out.print("Enter maximum age: ");
+                int maxAge = scanner.nextInt();
+                scanner.nextLine(); // flush
+                int ageTotal = checker.CensusCheckerAge(minAge, maxAge, stateFIPS);
+                System.out.println("AGE RANGE POPULATION: " + ageTotal);
+                break;
+
+            case "O":
+                System.out.println("Select occupation type:");
+                for (OccupationCode code : OccupationCode.values()) {
+                    System.out.println("- " + code.name());
+                }
+                String occInput = scanner.nextLine().trim().toUpperCase();
+                try {
+                    OccupationCode occupation = OccupationCode.valueOf(occInput);
+                    int occTotal = checker.getOccupationTotal(stateFIPS, occupation);
+                    System.out.println("WORKERS in " + occupation.name() + ": " + occTotal);
+                } catch (IllegalArgumentException e) {
+                    System.out.println("Invalid occupation type.");
+                }
+                break;
+
+            default:
+                System.out.println("Invalid option. Exiting.");
         }
-
-        System.out.println("------------------");
-        System.out.println("TOTAL STATE POPULATION: " + total);
-        System.out.println("------------------");
     }
 }
 
@@ -55,15 +74,30 @@ class AgeGroup {
         this.femaleCode = femaleCode;
     }
 
-    boolean overlaps(int rangeMin, int rangeMax) {
-        return this.max >= rangeMin && this.min <= rangeMax;
+    boolean overlaps(int minAge, int maxAge) {
+        return this.max >= minAge && this.min <= maxAge;
+    }
+}
+
+enum OccupationCode {
+    MANAGEMENT("C24010_003E", "C24010_050E"),
+    SERVICE("C24010_010E", "C24010_057E"),
+    SALES("C24010_016E", "C24010_063E"),
+    NATURAL_RESOURCES("C24010_023E", "C24010_070E"),
+    PRODUCTION("C24010_029E", "C24010_076E");
+
+    public final String maleCode;
+    public final String femaleCode;
+
+    OccupationCode(String maleCode, String femaleCode) {
+        this.maleCode = maleCode;
+        this.femaleCode = femaleCode;
     }
 }
 
 class CensusChecker {
-    private static final Logger logger = Logger.getLogger(CensusChecker.class.getName());
     private static final String API_KEY = "77502d8fcdde51ae873d05b0e50a2b9fc180b41b";
-    private final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     private static final List<AgeGroup> AGE_GROUPS = List.of(
         new AgeGroup(0, 4, "B01001_003E", "B01001_027E"),
@@ -91,75 +125,6 @@ class CensusChecker {
         new AgeGroup(85, 100, "B01001_025E", "B01001_049E")
     );
 
-    public int CensusCheckerAge(int minAge, int maxAge, String stateFIPS) {
-        List<String> variables = new ArrayList<>();
-        for (AgeGroup group : AGE_GROUPS) {
-            if (group.overlaps(minAge, maxAge)) {
-                variables.add(group.maleCode);
-                variables.add(group.femaleCode);
-            }
-        }
-
-        if (variables.isEmpty()) return 0;
-        String varList = String.join(",", variables);
-        String url = String.format("https://api.census.gov/data/2021/acs/acs5?get=NAME,%s&for=place:*&in=state:%s&key=%s",
-                                    varList, stateFIPS, API_KEY);
-        try {
-            String jsonData = fetch(url);
-            return parseAndSum(jsonData);
-        } catch (IOException e) {
-            logger.severe("Failed to fetch or parse data: " + e.getMessage());
-            return -1;
-        }
-    }
-
-    private String fetch(String fullUrl) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(10000);
-
-        int status = conn.getResponseCode();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(
-            status == HttpURLConnection.HTTP_OK ? conn.getInputStream() : conn.getErrorStream()
-        ));
-
-        StringBuilder content = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            content.append(line);
-        }
-        reader.close();
-        conn.disconnect();
-
-        if (status != HttpURLConnection.HTTP_OK) {
-            throw new RuntimeException("HTTP Error " + status + ": " + content);
-        }
-
-        return content.toString();
-    }
-
-    private int parseAndSum(String jsonData) throws IOException {
-        JsonNode root = mapper.readTree(jsonData);
-        if (!root.isArray() || root.size() < 2) return 0;
-
-        JsonNode headers = root.get(0);
-        List<Integer> popIndexes = new ArrayList<>();
-        for (int i = 0; i < headers.size(); i++) {
-            String h = headers.get(i).asText();
-            if (h.startsWith("B01001_")) popIndexes.add(i);
-        }
-
-        int total = 0;
-        for (int i = 1; i < root.size(); i++) {
-            JsonNode row = root.get(i);
-            for (int idx : popIndexes) {
-                total += Integer.parseInt(row.get(idx).asText());
-            }
-        }
-        return total;
-    }
-
     private static final Map<String, String> STATE_NAME_TO_FIPS = Map.ofEntries(
         Map.entry("Alabama", "01"), Map.entry("Alaska", "02"), Map.entry("Arizona", "04"),
         Map.entry("Arkansas", "05"), Map.entry("California", "06"), Map.entry("Colorado", "08"),
@@ -180,7 +145,39 @@ class CensusChecker {
         Map.entry("West Virginia", "54"), Map.entry("Wisconsin", "55"), Map.entry("Wyoming", "56")
     );
 
-    public String getStateFipsFromName(String stateName) {
-        return STATE_NAME_TO_FIPS.getOrDefault(stateName, null);
+    public int CensusCheckerAge(int minAge, int maxAge, String stateFips) {
+        int total = 0;
+        for (AgeGroup group : AGE_GROUPS) {
+            if (group.overlaps(minAge, maxAge)) {
+                total += fetch(group.maleCode, stateFips);
+                total += fetch(group.femaleCode, stateFips);
+            }
+        }
+        return total;
+    }
+
+    public int getOccupationTotal(String stateFips, OccupationCode occ) {
+        return fetch(occ.maleCode, stateFips) + fetch(occ.femaleCode, stateFips);
+    }
+
+    public String getStateFipsFromName(String name) {
+        return STATE_NAME_TO_FIPS.getOrDefault(name.trim(), null);
+    }
+
+    private int fetch(String var, String stateFips) {
+        try {
+            String url = "https://api.census.gov/data/2021/acs/acs5?get=" + var +
+                         "&for=state:" + stateFips + "&key=" + API_KEY;
+
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("GET");
+
+            InputStream is = conn.getInputStream();
+            JsonNode root = mapper.readTree(is);
+            String value = root.get(1).get(0).asText();
+            return Integer.parseInt(value);
+        } catch (Exception e) {
+            throw new RuntimeException("HTTP Error: " + e.getMessage(), e);
+        }
     }
 }
